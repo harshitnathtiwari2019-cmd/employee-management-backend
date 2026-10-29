@@ -158,6 +158,7 @@ export class EmployeeService {
 
     return AppDataSource.transaction(async (manager) => {
       const employee = new Employee();
+
       employee.firstName = data.firstName;
       employee.lastName = data.lastName;
       employee.email = data.email;
@@ -224,31 +225,27 @@ export class EmployeeService {
     const filename = await validateAndSaveProfilePhoto(file);
     const previousPhoto = employee.profilePhoto;
 
+    let updatedEmployee: Employee;
+
     try {
-      employee.profilePhoto = filename;
+      updatedEmployee = await AppDataSource.transaction(async (manager) => {
+        employee.profilePhoto = filename;
 
-      const updatedEmployee = await this.employeeRepository.update(employee);
+        const updated = await this.employeeRepository.update(employee, manager);
 
-      await this.recordAudit(
-        actor,
-        "EMPLOYEE_PROFILE_PHOTO_UPDATED",
-        updatedEmployee,
-        ipAddress,
-      );
-
-      if (previousPhoto) {
-        const previousPath = path.resolve(
-          process.cwd(),
-          "uploads",
-          "profiles",
-          previousPhoto,
+        await this.recordAudit(
+          actor,
+          "EMPLOYEE_PROFILE_PHOTO_UPDATED",
+          updated,
+          ipAddress,
+          undefined,
+          manager,
         );
 
-        await unlink(previousPath).catch(() => undefined);
-      }
-
-      return updatedEmployee;
+        return updated;
+      });
     } catch (error: unknown) {
+      // The transaction failed; remove the newly uploaded file.
       const newPath = path.resolve(
         process.cwd(),
         "uploads",
@@ -259,6 +256,21 @@ export class EmployeeService {
       await unlink(newPath).catch(() => undefined);
       throw error;
     }
+
+    // The database update and audit have committed successfully.
+    // Delete the previous photo only after the transaction succeeds.
+    if (previousPhoto && previousPhoto !== filename) {
+      const previousPath = path.resolve(
+        process.cwd(),
+        "uploads",
+        "profiles",
+        previousPhoto,
+      );
+
+      await unlink(previousPath).catch(() => undefined);
+    }
+
+    return updatedEmployee;
   }
 
   public async updateEmployee(

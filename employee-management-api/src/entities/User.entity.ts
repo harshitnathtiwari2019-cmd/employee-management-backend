@@ -18,11 +18,16 @@ export class User {
   @Column({ type: "varchar", length: 255, unique: true })
   email!: string;
 
-  @Column({ name: "password_hash", type: "varchar", length: 255 })
-  passwordHash!: string;
-
   @Column({ name: "is_active", type: "boolean", default: true })
   isActive!: boolean;
+
+  @Column({
+    name: "password_hash",
+    type: "varchar",
+    length: 255,
+    select: false,
+  })
+  passwordHash!: string;
 
   @ManyToOne(() => Role, { nullable: false })
   @JoinColumn({ name: "role_id" })
