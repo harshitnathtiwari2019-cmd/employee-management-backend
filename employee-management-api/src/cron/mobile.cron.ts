@@ -4,6 +4,10 @@ import { AppDataSource } from "../config/database.js";
 import { Employee } from "../entities/Employee.entity.js";
 import { Activity } from "../entities/activity.entity.js";
 
+type CronTask = ReturnType<typeof cron.schedule>;
+
+let mobileTask: CronTask | undefined;
+
 export async function checkMobile(): Promise<void> {
   if (!AppDataSource.isInitialized) {
     throw new Error("Database is not initialized");
@@ -35,7 +39,9 @@ export async function checkMobile(): Promise<void> {
 }
 
 export function startMobileCron(): void {
-  cron.schedule("*/30 * * * *", async () => {
+  if (mobileTask) return;
+
+  mobileTask = cron.schedule("*/30 * * * *", async () => {
     console.log("[Mobile Cron] Started:", new Date().toISOString());
 
     try {
@@ -44,4 +50,12 @@ export function startMobileCron(): void {
       console.error("[Mobile Cron] Failed:", error);
     }
   });
+
+  console.log("[Mobile Cron] Scheduled");
+}
+
+export function stopMobileCron(): void {
+  mobileTask?.stop();
+  mobileTask = undefined;
+  console.log("[Mobile Cron] Stopped");
 }

@@ -4,8 +4,14 @@ import { AppDataSource } from "../config/database.js";
 import { Employee } from "../entities/Employee.entity.js";
 import { Activity } from "../entities/activity.entity.js";
 
+type CronTask = ReturnType<typeof cron.schedule>;
+
+let activityTask: CronTask | undefined;
+
 export function startActivityCron(): void {
-  cron.schedule("0 * * * *", async () => {
+  if (activityTask) return;
+
+  activityTask = cron.schedule("0 * * * *", async () => {
     console.log("[Activity Cron] Started:", new Date().toISOString());
 
     try {
@@ -36,4 +42,12 @@ export function startActivityCron(): void {
       console.error("[Activity Cron] Failed:", error);
     }
   });
+
+  console.log("[Activity Cron] Scheduled");
+}
+
+export function stopActivityCron(): void {
+  activityTask?.stop();
+  activityTask = undefined;
+  console.log("[Activity Cron] Stopped");
 }
