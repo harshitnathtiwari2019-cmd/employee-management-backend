@@ -24,6 +24,20 @@ export class DepartmentService {
     }
   }
 
+  /**
+   * Database-only lookup for write operations.
+   * Never returns a JSON-parsed Redis object.
+   */
+  private async getDepartmentFromDatabase(id: string): Promise<Department> {
+    const department = await this.departmentRepository.findById(id);
+
+    if (!department) {
+      throw new AppError("Department not found", 404);
+    }
+
+    return department;
+  }
+
   public async getAllDepartments(): Promise<Department[]> {
     if (redisClient.isReady) {
       const cached = await redisClient.get(DEPARTMENT_LIST_KEY);
@@ -55,11 +69,7 @@ export class DepartmentService {
       }
     }
 
-    const department = await this.departmentRepository.findById(id);
-
-    if (!department) {
-      throw new AppError("Department not found", 404);
-    }
+    const department = await this.getDepartmentFromDatabase(id);
 
     if (redisClient.isReady) {
       await redisClient.set(cacheKey, JSON.stringify(department), {
@@ -96,7 +106,8 @@ export class DepartmentService {
     id: string,
     data: UpdateDepartmentDto,
   ): Promise<Department> {
-    const department = await this.getDepartmentById(id);
+    // Always read fresh entity data from PostgreSQL before writing.
+    const department = await this.getDepartmentFromDatabase(id);
 
     if (data.name !== undefined) {
       const normalizedName = data.name.trim();
@@ -129,7 +140,8 @@ export class DepartmentService {
   }
 
   public async deleteDepartment(id: string): Promise<void> {
-    const department = await this.getDepartmentById(id);
+    // Always read fresh entity data from PostgreSQL before deleting.
+    const department = await this.getDepartmentFromDatabase(id);
 
     const hasEmployees = await this.departmentRepository.hasEmployees(
       department.id,
@@ -143,6 +155,7 @@ export class DepartmentService {
     }
 
     await this.departmentRepository.delete(department);
+
     await this.invalidateDepartmentCache(id);
   }
 }
