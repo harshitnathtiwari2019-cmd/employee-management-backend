@@ -1,22 +1,41 @@
 import type { Employee } from "../entities/Employee.entity.js";
 
-export function toEmployeeResponse(employee: Employee) {
-  return {
-    id: employee.id,
-    firstName: employee.firstName,
-    lastName: employee.lastName,
-    email: employee.email,
-    jobTitle: employee.jobTitle,
-    joiningDate: employee.joiningDate,
-    isActive: employee.isActive,
-    profilePhoto: employee.profilePhoto,
-    department: employee.department
+export class EmployeeResponseDto {
+  id: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  jobTitle: string;
+  joiningDate: string;
+  isActive: boolean;
+  profilePhoto: string | null;
+
+  department: {
+    id: string;
+    name: string;
+  } | null;
+
+  createdAt: Date;
+  updatedAt: Date;
+
+  constructor(employee: Employee) {
+    this.id = employee.id;
+    this.firstName = employee.firstName;
+    this.lastName = employee.lastName;
+    this.email = employee.email;
+    this.jobTitle = employee.jobTitle;
+    this.joiningDate = String(employee.joiningDate);
+    this.isActive = employee.isActive;
+    this.profilePhoto = employee.profilePhoto;
+
+    this.department = employee.department
       ? {
           id: employee.department.id,
           name: employee.department.name,
         }
-      : null,
-    createdAt: employee.createdAt,
-    updatedAt: employee.updatedAt,
-  };
+      : null;
+
+    this.createdAt = employee.createdAt;
+    this.updatedAt = employee.updatedAt;
+  }
 }
