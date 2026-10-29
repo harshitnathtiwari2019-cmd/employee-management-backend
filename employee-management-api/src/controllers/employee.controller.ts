@@ -1,14 +1,19 @@
 import type { Request, Response, NextFunction } from "express";
+
 import { z } from "zod";
+
 import {
   EmployeeService,
   type EmployeeActor,
 } from "../services/employee.service.js";
+
 import {
   createEmployeeSchema,
   updateEmployeeSchema,
 } from "../dto/employee.dto.js";
+
 import { employeeQuerySchema } from "../dto/employee-query.dto.js";
+import { EmployeeResponseDto } from "../dto/employee-response.dto.js";
 import { AppError } from "../errors/AppError.js";
 
 const employeeIdSchema = z.object({
@@ -55,7 +60,7 @@ export class EmployeeController {
 
       res.status(200).json({
         success: true,
-        data: result.data,
+        data: result.data.map((employee) => new EmployeeResponseDto(employee)),
         pagination: result.pagination,
       });
     } catch (error: unknown) {
@@ -135,7 +140,7 @@ export class EmployeeController {
 
       res.status(200).json({
         success: true,
-        data: employee,
+        data: new EmployeeResponseDto(employee),
       });
     } catch (error: unknown) {
       next(error);
@@ -168,7 +173,7 @@ export class EmployeeController {
       res.status(201).json({
         success: true,
         message: "Employee created successfully",
-        data: employee,
+        data: new EmployeeResponseDto(employee),
       });
     } catch (error: unknown) {
       next(error);
@@ -215,7 +220,7 @@ export class EmployeeController {
       res.status(200).json({
         success: true,
         message: "Employee updated successfully",
-        data: employee,
+        data: new EmployeeResponseDto(employee),
       });
     } catch (error: unknown) {
       next(error);
@@ -250,7 +255,7 @@ export class EmployeeController {
       res.status(200).json({
         success: true,
         message: "Employee deactivated successfully",
-        data: employee,
+        data: new EmployeeResponseDto(employee),
       });
     } catch (error: unknown) {
       next(error);
