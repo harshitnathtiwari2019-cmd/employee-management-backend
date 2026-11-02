@@ -1,7 +1,8 @@
 import { createClient } from "redis";
+import { env } from "./env.js";
 
 export const redisClient = createClient({
-  url: process.env.REDIS_URL ?? "redis://localhost:6379",
+  url: env.REDIS_URL,
   socket: {
     connectTimeout: 5000,
     reconnectStrategy: (retries) => {
@@ -9,7 +10,7 @@ export const redisClient = createClient({
         return new Error("Redis connection failed after 3 retries");
       }
 
-      return Math.min(retries * 500, 1000);
+      return Math.min((retries + 1) * 500, 1500);
     },
   },
 });
@@ -24,6 +25,5 @@ export async function connectRedis(): Promise<void> {
   }
 
   await redisClient.connect();
-
   console.log("Redis connected successfully");
 }

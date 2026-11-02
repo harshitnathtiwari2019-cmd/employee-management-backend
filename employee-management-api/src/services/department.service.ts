@@ -1,13 +1,13 @@
-import { redisClient } from "../config/redis.js";
 import { Department } from "../entities/Department.entity.js";
 import { DepartmentRepository } from "../repositories/department.repository.js";
 import type { CreateDepartmentDto } from "../dto/department.dto.js";
 import type { UpdateDepartmentDto } from "../dto/update-department.dto.js";
 import { AppError } from "../errors/AppError.js";
+import { cacheService } from "./cache.service.js";
 
 const DEPARTMENT_LIST_KEY = "departments:all";
 const DEPARTMENT_KEY_PREFIX = "department:";
-const CACHE_TTL_SECONDS = 300;
+const DEPARTMENT_CACHE_TTL_SECONDS = 300;
 
 export class DepartmentService {
   constructor(
@@ -15,19 +15,14 @@ export class DepartmentService {
   ) {}
 
   private async invalidateDepartmentCache(id?: string): Promise<void> {
-    if (!redisClient.isReady) return;
-
-    await redisClient.del(DEPARTMENT_LIST_KEY);
-
     if (id) {
-      await redisClient.del(`${DEPARTMENT_KEY_PREFIX}${id}`);
+      await cacheService.delete(`${DEPARTMENT_KEY_PREFIX}${id}`);
     }
+
+    await cacheService.delete(DEPARTMENT_LIST_KEY);
+    await cacheService.deleteByPattern("departments:list:*");
   }
 
-  /**
-   * Database-only lookup for write operations.
-   * Never returns a JSON-parsed Redis object.
-   */
   private async getDepartmentFromDatabase(id: string): Promise<Department> {
     const department = await this.departmentRepository.findById(id);
 
@@ -39,43 +34,34 @@ export class DepartmentService {
   }
 
   public async getAllDepartments(): Promise<Department[]> {
-    if (redisClient.isReady) {
-      const cached = await redisClient.get(DEPARTMENT_LIST_KEY);
+    const cached = await cacheService.get<Department[]>(DEPARTMENT_LIST_KEY);
 
-      if (cached) {
-        return JSON.parse(cached) as Department[];
-      }
+    if (cached !== null) {
+      return cached;
     }
 
     const departments = await this.departmentRepository.findAll();
 
-    if (redisClient.isReady) {
-      await redisClient.set(DEPARTMENT_LIST_KEY, JSON.stringify(departments), {
-        EX: CACHE_TTL_SECONDS,
-      });
-    }
+    await cacheService.set(
+      DEPARTMENT_LIST_KEY,
+      departments,
+      DEPARTMENT_CACHE_TTL_SECONDS,
+    );
 
     return departments;
   }
 
   public async getDepartmentById(id: string): Promise<Department> {
     const cacheKey = `${DEPARTMENT_KEY_PREFIX}${id}`;
+    const cached = await cacheService.get<Department>(cacheKey);
 
-    if (redisClient.isReady) {
-      const cached = await redisClient.get(cacheKey);
-
-      if (cached) {
-        return JSON.parse(cached) as Department;
-      }
+    if (cached !== null) {
+      return cached;
     }
 
     const department = await this.getDepartmentFromDatabase(id);
 
-    if (redisClient.isReady) {
-      await redisClient.set(cacheKey, JSON.stringify(department), {
-        EX: CACHE_TTL_SECONDS,
-      });
-    }
+    await cacheService.set(cacheKey, department, DEPARTMENT_CACHE_TTL_SECONDS);
 
     return department;
   }
@@ -106,7 +92,6 @@ export class DepartmentService {
     id: string,
     data: UpdateDepartmentDto,
   ): Promise<Department> {
-    // Always read fresh entity data from PostgreSQL before writing.
     const department = await this.getDepartmentFromDatabase(id);
 
     if (data.name !== undefined) {
@@ -140,7 +125,6 @@ export class DepartmentService {
   }
 
   public async deleteDepartment(id: string): Promise<void> {
-    // Always read fresh entity data from PostgreSQL before deleting.
     const department = await this.getDepartmentFromDatabase(id);
 
     const hasEmployees = await this.departmentRepository.hasEmployees(

@@ -5,6 +5,7 @@ import { getSession } from "../services/session.service.js";
 export interface AuthenticatedUser {
   userId: string;
   role: string;
+  sessionId: string;
 }
 
 declare global {
@@ -29,6 +30,7 @@ export class AuthenticateTokenMiddleware {
   ): Promise<void> => {
     const authorization = req.headers.authorization;
 
+    // Step 1: Check whether the access token exists.
     if (!authorization || !authorization.startsWith("Bearer ")) {
       res.status(401).json({
         success: false,
@@ -47,6 +49,7 @@ export class AuthenticateTokenMiddleware {
       return;
     }
 
+    // Step 2: Verify the access token.
     let payload;
 
     try {
@@ -59,6 +62,7 @@ export class AuthenticateTokenMiddleware {
       return;
     }
 
+    // Step 3: Verify that the Redis session still exists.
     try {
       const session = await getSession(payload.sid);
 
@@ -70,11 +74,14 @@ export class AuthenticateTokenMiddleware {
         return;
       }
 
+      // Step 4: Attach authenticated user information to the request.
       req.user = {
         userId: payload.userId,
         role: payload.role,
+        sessionId: payload.sid,
       };
 
+      // Step 5: Continue to the next middleware or controller.
       next();
     } catch {
       res.status(503).json({
