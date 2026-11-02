@@ -9,7 +9,14 @@ import type { LoginDto } from "../dto/auth.dto.js";
 import { UserRepository } from "../repositories/user.repository.js";
 import { PasswordService } from "./password.service.js";
 import { TokenService } from "./token.service.js";
-import { createSession, getSession, deleteSession } from "./session.service.js";
+
+import {
+  createSession,
+  getSession,
+  deleteSession,
+  listUserSessions,
+  type SessionData,
+} from "./session.service.js";
 
 export class AuthService {
   constructor(
@@ -31,6 +38,10 @@ export class AuthService {
       Date.now() + env.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000,
     );
   }
+
+  // ==========================================
+  // LOGIN
+  // ==========================================
 
   public async login(data: LoginDto): Promise<{
     accessToken: string;
@@ -72,8 +83,6 @@ export class AuthService {
     try {
       await createSession(sessionId, user.id);
     } catch {
-      // Redis session creation failed. Revoke the refresh token
-      // so a partially completed login cannot be refreshed.
       await refreshTokenRepository.update(
         { id: tokenRecord.id },
         { revokedAt: new Date() },
@@ -99,6 +108,10 @@ export class AuthService {
     };
   }
 
+  // ==========================================
+  // REFRESH TOKEN ROTATION
+  // ==========================================
+
   public async refresh(refreshToken: string): Promise<{
     accessToken: string;
     refreshToken: string;
@@ -106,9 +119,9 @@ export class AuthService {
     expiresIn: string;
   }> {
     const tokenHash = this.hashRefreshToken(refreshToken);
+
     const refreshTokenRepository = AppDataSource.getRepository(RefreshToken);
 
-    // Find the session before rotating the refresh token.
     const existingToken = await refreshTokenRepository.findOne({
       where: { tokenHash },
       relations: { user: true },
@@ -158,11 +171,11 @@ export class AuthService {
         throw new AppError("Invalid or expired refresh token", 401);
       }
 
-      // Revoke the old token.
+      // Revoke the old refresh token.
       storedToken.revokedAt = new Date();
       await tokenRepository.save(storedToken);
 
-      // Issue a replacement token for the SAME session.
+      // Generate a replacement refresh token.
       const newRefreshToken = this.generateRefreshToken();
 
       const newTokenRecord = tokenRepository.create({
@@ -191,12 +204,17 @@ export class AuthService {
     return result;
   }
 
+  // ==========================================
+  // LOGOUT
+  // ==========================================
+
   public async logout(refreshToken: string | undefined): Promise<void> {
     if (!refreshToken) {
       return;
     }
 
     const tokenHash = this.hashRefreshToken(refreshToken);
+
     const refreshTokenRepository = AppDataSource.getRepository(RefreshToken);
 
     const storedToken = await refreshTokenRepository.findOne({
@@ -209,7 +227,7 @@ export class AuthService {
 
     const sessionId = storedToken.sessionId;
 
-    // Revoke every refresh token belonging to this session.
+    // Revoke all refresh tokens belonging to this session.
     await refreshTokenRepository
       .createQueryBuilder()
       .update(RefreshToken)
@@ -218,7 +236,43 @@ export class AuthService {
       .andWhere("revoked_at IS NULL")
       .execute();
 
-    // Invalidate access tokens associated with this session.
+    // Delete the Redis session.
+    await deleteSession(sessionId);
+  }
+
+  // ==========================================
+  // LIST USER SESSIONS
+  // ==========================================
+
+  public async getUserSessions(userId: string): Promise<SessionData[]> {
+    return listUserSessions(userId);
+  }
+
+  // ==========================================
+  // REVOKE A SPECIFIC SESSION
+  // ==========================================
+
+  public async revokeSession(userId: string, sessionId: string): Promise<void> {
+    // Find the requested session in Redis.
+    const session = await getSession(sessionId);
+
+    // Verify that the session belongs to the authenticated user.
+    if (!session || session.userId !== userId) {
+      throw new AppError("Session not found", 404);
+    }
+
+    const refreshTokenRepository = AppDataSource.getRepository(RefreshToken);
+
+    // Revoke all refresh tokens associated with this session.
+    await refreshTokenRepository
+      .createQueryBuilder()
+      .update(RefreshToken)
+      .set({ revokedAt: new Date() })
+      .where('"session_id" = :sessionId', { sessionId })
+      .andWhere("revoked_at IS NULL")
+      .execute();
+
+    // Remove the session from Redis.
     await deleteSession(sessionId);
   }
 }

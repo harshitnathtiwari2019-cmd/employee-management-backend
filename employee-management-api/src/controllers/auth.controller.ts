@@ -6,6 +6,10 @@ import { AuthService } from "../services/auth.service.js";
 export class AuthController {
   constructor(private readonly authService: AuthService = new AuthService()) {}
 
+  // ==========================================
+  // LOGIN
+  // ==========================================
+
   public login = async (
     req: Request,
     res: Response,
@@ -47,6 +51,10 @@ export class AuthController {
     }
   };
 
+  // ==========================================
+  // REFRESH TOKEN
+  // ==========================================
+
   public refresh = async (
     req: Request,
     res: Response,
@@ -87,6 +95,10 @@ export class AuthController {
     }
   };
 
+  // ==========================================
+  // LOGOUT
+  // ==========================================
+
   public logout = async (
     req: Request,
     res: Response,
@@ -109,6 +121,83 @@ export class AuthController {
       res.status(200).json({
         success: true,
         message: "Logout successful",
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  // ==========================================
+  // GET ALL ACTIVE SESSIONS
+  // ==========================================
+
+  public getSessions = async (
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      if (!req.user) {
+        res.status(401).json({
+          success: false,
+          message: "Authentication required",
+        });
+        return;
+      }
+
+      const sessions = await this.authService.getUserSessions(req.user.userId);
+
+      res.status(200).json({
+        success: true,
+        message: "Sessions retrieved successfully",
+        data: sessions,
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  // ==========================================
+  // REVOKE A SPECIFIC SESSION
+  // ==========================================
+
+  public revokeSession = async (
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      if (!req.user) {
+        res.status(401).json({
+          success: false,
+          message: "Authentication required",
+        });
+        return;
+      }
+
+      const sessionId = req.params.sessionId;
+
+      if (typeof sessionId !== "string" || !sessionId.trim()) {
+        res.status(400).json({
+          success: false,
+          message: "Valid session ID is required",
+        });
+        return;
+      }
+
+      if (!sessionId) {
+        res.status(400).json({
+          success: false,
+          message: "Session ID is required",
+        });
+        return;
+      }
+
+      await this.authService.revokeSession(req.user.userId, sessionId);
+
+      res.status(200).json({
+        success: true,
+        message: "Session revoked successfully",
       });
     } catch (error) {
       next(error);

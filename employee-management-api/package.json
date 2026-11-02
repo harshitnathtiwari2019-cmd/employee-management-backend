@@ -9,9 +9,9 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
-    "migration:generate": "typeorm migration:generate",
-    "migration:run": "typeorm migration:run",
-    "migration:revert": "typeorm migration:revert",
+    "migration:generate": "typeorm migration:generate -d dist/config/database.js",
+    "migration:run": "typeorm migration:run -d dist/config/database.js",
+    "migration:revert": "typeorm migration:revert -d dist/config/database.js",
     "seed": "tsx src/seeds/run-seed.ts",
     "create:admin": "tsx src/seeds/create-admin.ts"
   },

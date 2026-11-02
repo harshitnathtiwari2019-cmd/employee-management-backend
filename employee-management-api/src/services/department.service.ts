@@ -1,13 +1,13 @@
-import { redisClient } from "../config/redis.js";
 import { Department } from "../entities/Department.entity.js";
 import { DepartmentRepository } from "../repositories/department.repository.js";
 import type { CreateDepartmentDto } from "../dto/department.dto.js";
 import type { UpdateDepartmentDto } from "../dto/update-department.dto.js";
 import { AppError } from "../errors/AppError.js";
+import { cacheService } from "./cache.service.js";
 
 const DEPARTMENT_LIST_KEY = "departments:all";
 const DEPARTMENT_KEY_PREFIX = "department:";
-const CACHE_TTL_SECONDS = 300;
+const DEPARTMENT_CACHE_TTL_SECONDS = 300;
 
 export class DepartmentService {
   constructor(
@@ -15,57 +15,53 @@ export class DepartmentService {
   ) {}
 
   private async invalidateDepartmentCache(id?: string): Promise<void> {
-    if (!redisClient.isReady) return;
-
-    await redisClient.del(DEPARTMENT_LIST_KEY);
-
     if (id) {
-      await redisClient.del(`${DEPARTMENT_KEY_PREFIX}${id}`);
+      await cacheService.delete(`${DEPARTMENT_KEY_PREFIX}${id}`);
     }
+
+    await cacheService.delete(DEPARTMENT_LIST_KEY);
+    await cacheService.deleteByPattern("departments:list:*");
   }
 
-  public async getAllDepartments(): Promise<Department[]> {
-    if (redisClient.isReady) {
-      const cached = await redisClient.get(DEPARTMENT_LIST_KEY);
-
-      if (cached) {
-        return JSON.parse(cached) as Department[];
-      }
-    }
-
-    const departments = await this.departmentRepository.findAll();
-
-    if (redisClient.isReady) {
-      await redisClient.set(DEPARTMENT_LIST_KEY, JSON.stringify(departments), {
-        EX: CACHE_TTL_SECONDS,
-      });
-    }
-
-    return departments;
-  }
-
-  public async getDepartmentById(id: string): Promise<Department> {
-    const cacheKey = `${DEPARTMENT_KEY_PREFIX}${id}`;
-
-    if (redisClient.isReady) {
-      const cached = await redisClient.get(cacheKey);
-
-      if (cached) {
-        return JSON.parse(cached) as Department;
-      }
-    }
-
+  private async getDepartmentFromDatabase(id: string): Promise<Department> {
     const department = await this.departmentRepository.findById(id);
 
     if (!department) {
       throw new AppError("Department not found", 404);
     }
 
-    if (redisClient.isReady) {
-      await redisClient.set(cacheKey, JSON.stringify(department), {
-        EX: CACHE_TTL_SECONDS,
-      });
+    return department;
+  }
+
+  public async getAllDepartments(): Promise<Department[]> {
+    const cached = await cacheService.get<Department[]>(DEPARTMENT_LIST_KEY);
+
+    if (cached !== null) {
+      return cached;
     }
+
+    const departments = await this.departmentRepository.findAll();
+
+    await cacheService.set(
+      DEPARTMENT_LIST_KEY,
+      departments,
+      DEPARTMENT_CACHE_TTL_SECONDS,
+    );
+
+    return departments;
+  }
+
+  public async getDepartmentById(id: string): Promise<Department> {
+    const cacheKey = `${DEPARTMENT_KEY_PREFIX}${id}`;
+    const cached = await cacheService.get<Department>(cacheKey);
+
+    if (cached !== null) {
+      return cached;
+    }
+
+    const department = await this.getDepartmentFromDatabase(id);
+
+    await cacheService.set(cacheKey, department, DEPARTMENT_CACHE_TTL_SECONDS);
 
     return department;
   }
@@ -96,7 +92,7 @@ export class DepartmentService {
     id: string,
     data: UpdateDepartmentDto,
   ): Promise<Department> {
-    const department = await this.getDepartmentById(id);
+    const department = await this.getDepartmentFromDatabase(id);
 
     if (data.name !== undefined) {
       const normalizedName = data.name.trim();
@@ -129,7 +125,7 @@ export class DepartmentService {
   }
 
   public async deleteDepartment(id: string): Promise<void> {
-    const department = await this.getDepartmentById(id);
+    const department = await this.getDepartmentFromDatabase(id);
 
     const hasEmployees = await this.departmentRepository.hasEmployees(
       department.id,
@@ -143,6 +139,7 @@ export class DepartmentService {
     }
 
     await this.departmentRepository.delete(department);
+
     await this.invalidateDepartmentCache(id);
   }
 }

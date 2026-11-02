@@ -1,4 +1,4 @@
-import { Repository, ILike, type EntityManager } from "typeorm";
+import { Repository, type EntityManager } from "typeorm";
 
 import { AppDataSource } from "../config/database.js";
 import { Employee } from "../entities/Employee.entity.js";
@@ -17,26 +17,24 @@ export class EmployeeRepository {
   }
 
   public async findByUserId(userId: string): Promise<Employee | null> {
-    return this.repository.findOne({
-      where: { user: { id: userId } },
-      relations: {
-        department: true,
-        user: true,
-      },
-    });
+    return this.repository
+      .createQueryBuilder("employee")
+      .leftJoinAndSelect("employee.department", "department")
+      .leftJoin("employee.user", "user")
+      .addSelect(["user.id", "user.email", "user.isActive"])
+      .where("user.id = :userId", { userId })
+      .getOne();
   }
 
   public async findAll(): Promise<Employee[]> {
-    return this.repository.find({
-      relations: {
-        department: true,
-        user: true,
-      },
-      order: {
-        lastName: "ASC",
-        firstName: "ASC",
-      },
-    });
+    return this.repository
+      .createQueryBuilder("employee")
+      .leftJoinAndSelect("employee.department", "department")
+      .leftJoin("employee.user", "user")
+      .addSelect(["user.id", "user.email", "user.isActive"])
+      .orderBy("employee.lastName", "ASC")
+      .addOrderBy("employee.firstName", "ASC")
+      .getMany();
   }
 
   public async findPaginated(
@@ -49,7 +47,8 @@ export class EmployeeRepository {
     const queryBuilder = this.repository
       .createQueryBuilder("employee")
       .leftJoinAndSelect("employee.department", "department")
-      .leftJoinAndSelect("employee.user", "user");
+      .leftJoin("employee.user", "user")
+      .addSelect(["user.id", "user.email", "user.isActive"]);
 
     if (scope?.employeeId) {
       queryBuilder.andWhere("employee.id = :employeeId", {
@@ -109,13 +108,13 @@ export class EmployeeRepository {
   }
 
   public async findById(id: string): Promise<Employee | null> {
-    return this.repository.findOne({
-      where: { id },
-      relations: {
-        department: true,
-        user: true,
-      },
-    });
+    return this.repository
+      .createQueryBuilder("employee")
+      .leftJoinAndSelect("employee.department", "department")
+      .leftJoin("employee.user", "user")
+      .addSelect(["user.id", "user.email", "user.isActive"])
+      .where("employee.id = :id", { id })
+      .getOne();
   }
 
   public async findByEmail(email: string): Promise<Employee | null> {
@@ -123,7 +122,6 @@ export class EmployeeRepository {
       where: { email },
       relations: {
         department: true,
-        user: true,
       },
     });
   }

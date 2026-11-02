@@ -1,21 +1,26 @@
+import { createHash } from "node:crypto";
+import { unlink } from "node:fs/promises";
+import path from "node:path";
+import type { EntityManager } from "typeorm";
+
 import { AppDataSource } from "../config/database.js";
 import { Employee } from "../entities/Employee.entity.js";
+import { AppError } from "../errors/AppError.js";
+import type {
+  CreateEmployeeDto,
+  UpdateEmployeeDto,
+} from "../dto/employee.dto.js";
+import type { EmployeeQueryDto } from "../dto/employee-query.dto.js";
+import { validateAndSaveProfilePhoto } from "../middlewares/upload.middleware.js";
 import { DepartmentRepository } from "../repositories/department.repository.js";
 import {
   EmployeeRepository,
   type EmployeeAccessScope,
 } from "../repositories/employee.repository.js";
-import type {
-  CreateEmployeeDto,
-  UpdateEmployeeDto,
-} from "../dto/employee.dto.js";
-import { AppError } from "../errors/AppError.js";
-import type { EmployeeQueryDto } from "../dto/employee-query.dto.js";
-import { validateAndSaveProfilePhoto } from "../middlewares/upload.middleware.js";
-import { unlink } from "node:fs/promises";
-import path from "node:path";
-import type { EntityManager } from "typeorm";
 import { AuditLogService } from "./audit-log.service.js";
+import { cacheService } from "./cache.service.js";
+
+const EMPLOYEE_CACHE_TTL_SECONDS = 300;
 
 export interface EmployeeActor {
   userId: string;
@@ -48,6 +53,25 @@ export class EmployeeService {
       },
       manager,
     );
+  }
+
+  private createEmployeeListCacheKey(
+    query: unknown,
+    scope: EmployeeAccessScope,
+  ): string {
+    const normalizedInput = JSON.stringify({
+      query,
+      scope: {
+        employeeId: scope.employeeId ?? null,
+        departmentId: scope.departmentId ?? null,
+      },
+    });
+
+    const filterHash = createHash("sha256")
+      .update(normalizedInput)
+      .digest("hex");
+
+    return `employees:list:${filterHash}`;
   }
 
   private async getAccessScope(
@@ -103,11 +127,30 @@ export class EmployeeService {
     }
   }
 
+  private async invalidateEmployeeCache(employeeId?: string): Promise<void> {
+    if (employeeId) {
+      await cacheService.delete(`employee:${employeeId}`);
+    }
+
+    await cacheService.deleteByPattern("employees:list:*");
+  }
+
   public async getAllEmployees(actor: EmployeeActor): Promise<Employee[]> {
     const scope = await this.getAccessScope(actor);
+    const cacheKey = this.createEmployeeListCacheKey(
+      { operation: "all" },
+      scope,
+    );
+
+    const cachedEmployees = await cacheService.get<Employee[]>(cacheKey);
+
+    if (cachedEmployees !== null) {
+      return cachedEmployees;
+    }
+
     const employees = await this.employeeRepository.findAll();
 
-    return employees.filter((employee) => {
+    const filteredEmployees = employees.filter((employee) => {
       if (scope.employeeId && employee.id !== scope.employeeId) {
         return false;
       }
@@ -118,12 +161,28 @@ export class EmployeeService {
 
       return true;
     });
+
+    await cacheService.set(
+      cacheKey,
+      filteredEmployees,
+      EMPLOYEE_CACHE_TTL_SECONDS,
+    );
+
+    return filteredEmployees;
   }
 
   public async getEmployeeById(
     id: string,
     actor: EmployeeActor,
   ): Promise<Employee> {
+    const cacheKey = `employee:${id}`;
+    const cachedEmployee = await cacheService.get<Employee>(cacheKey);
+
+    if (cachedEmployee !== null) {
+      await this.assertCanAccessEmployee(cachedEmployee, actor);
+      return cachedEmployee;
+    }
+
     const employee = await this.employeeRepository.findById(id);
 
     if (!employee) {
@@ -131,6 +190,8 @@ export class EmployeeService {
     }
 
     await this.assertCanAccessEmployee(employee, actor);
+
+    await cacheService.set(cacheKey, employee, EMPLOYEE_CACHE_TTL_SECONDS);
 
     return employee;
   }
@@ -156,8 +217,9 @@ export class EmployeeService {
       throw new AppError("Department not found", 404);
     }
 
-    return AppDataSource.transaction(async (manager) => {
+    const createdEmployee = await AppDataSource.transaction(async (manager) => {
       const employee = new Employee();
+
       employee.firstName = data.firstName;
       employee.lastName = data.lastName;
       employee.email = data.email;
@@ -166,22 +228,23 @@ export class EmployeeService {
       employee.isActive = true;
       employee.department = department;
 
-      const createdEmployee = await this.employeeRepository.create(
-        employee,
-        manager,
-      );
+      const created = await this.employeeRepository.create(employee, manager);
 
       await this.recordAudit(
         actor,
         "EMPLOYEE_CREATED",
-        createdEmployee,
+        created,
         ipAddress,
         { departmentId: department.id },
         manager,
       );
 
-      return createdEmployee;
+      return created;
     });
+
+    await this.invalidateEmployeeCache();
+
+    return createdEmployee;
   }
 
   public async getPaginatedEmployees(
@@ -197,13 +260,31 @@ export class EmployeeService {
     };
   }> {
     const scope = await this.getAccessScope(actor);
+    const cacheKey = this.createEmployeeListCacheKey(
+      { operation: "paginated", ...query },
+      scope,
+    );
+
+    const cachedResult = await cacheService.get<{
+      data: Employee[];
+      pagination: {
+        page: number;
+        limit: number;
+        total: number;
+        totalPages: number;
+      };
+    }>(cacheKey);
+
+    if (cachedResult !== null) {
+      return cachedResult;
+    }
 
     const { employees, total } = await this.employeeRepository.findPaginated(
       query,
       scope,
     );
 
-    return {
+    const result = {
       data: employees,
       pagination: {
         page: query.page,
@@ -212,6 +293,10 @@ export class EmployeeService {
         totalPages: Math.ceil(total / query.limit),
       },
     };
+
+    await cacheService.set(cacheKey, result, EMPLOYEE_CACHE_TTL_SECONDS);
+
+    return result;
   }
 
   public async updateProfilePhoto(
@@ -224,30 +309,25 @@ export class EmployeeService {
     const filename = await validateAndSaveProfilePhoto(file);
     const previousPhoto = employee.profilePhoto;
 
+    let updatedEmployee: Employee;
+
     try {
-      employee.profilePhoto = filename;
+      updatedEmployee = await AppDataSource.transaction(async (manager) => {
+        employee.profilePhoto = filename;
 
-      const updatedEmployee = await this.employeeRepository.update(employee);
+        const updated = await this.employeeRepository.update(employee, manager);
 
-      await this.recordAudit(
-        actor,
-        "EMPLOYEE_PROFILE_PHOTO_UPDATED",
-        updatedEmployee,
-        ipAddress,
-      );
-
-      if (previousPhoto) {
-        const previousPath = path.resolve(
-          process.cwd(),
-          "uploads",
-          "profiles",
-          previousPhoto,
+        await this.recordAudit(
+          actor,
+          "EMPLOYEE_PROFILE_PHOTO_UPDATED",
+          updated,
+          ipAddress,
+          undefined,
+          manager,
         );
 
-        await unlink(previousPath).catch(() => undefined);
-      }
-
-      return updatedEmployee;
+        return updated;
+      });
     } catch (error: unknown) {
       const newPath = path.resolve(
         process.cwd(),
@@ -259,6 +339,21 @@ export class EmployeeService {
       await unlink(newPath).catch(() => undefined);
       throw error;
     }
+
+    await this.invalidateEmployeeCache(updatedEmployee.id);
+
+    if (previousPhoto && previousPhoto !== filename) {
+      const previousPath = path.resolve(
+        process.cwd(),
+        "uploads",
+        "profiles",
+        previousPhoto,
+      );
+
+      await unlink(previousPath).catch(() => undefined);
+    }
+
+    return updatedEmployee;
   }
 
   public async updateEmployee(
@@ -326,23 +421,24 @@ export class EmployeeService {
       changedFields.push("departmentId");
     }
 
-    return AppDataSource.transaction(async (manager) => {
-      const updatedEmployee = await this.employeeRepository.update(
-        employee,
-        manager,
-      );
+    const updatedEmployee = await AppDataSource.transaction(async (manager) => {
+      const updated = await this.employeeRepository.update(employee, manager);
 
       await this.recordAudit(
         actor,
         "EMPLOYEE_UPDATED",
-        updatedEmployee,
+        updated,
         ipAddress,
         { changedFields },
         manager,
       );
 
-      return updatedEmployee;
+      return updated;
     });
+
+    await this.invalidateEmployeeCache(updatedEmployee.id);
+
+    return updatedEmployee;
   }
 
   public async deactivateEmployee(
@@ -352,24 +448,25 @@ export class EmployeeService {
   ): Promise<Employee> {
     const employee = await this.getEmployeeById(id, actor);
 
-    return AppDataSource.transaction(async (manager) => {
+    const updatedEmployee = await AppDataSource.transaction(async (manager) => {
       employee.isActive = false;
 
-      const updatedEmployee = await this.employeeRepository.update(
-        employee,
-        manager,
-      );
+      const updated = await this.employeeRepository.update(employee, manager);
 
       await this.recordAudit(
         actor,
         "EMPLOYEE_DEACTIVATED",
-        updatedEmployee,
+        updated,
         ipAddress,
         undefined,
         manager,
       );
 
-      return updatedEmployee;
+      return updated;
     });
+
+    await this.invalidateEmployeeCache(updatedEmployee.id);
+
+    return updatedEmployee;
   }
 }
